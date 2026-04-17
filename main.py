@@ -138,4 +138,7 @@ Location: {user['location']}
     else:
         reply = generate_ai_reply("Tell the user we will contact them soon.")
 
-    return PlainTextResponse(reply)
+    return PlainTextResponse(
+    f"<Response><Message>{reply}</Message></Response>",
+    media_type="application/xml"
+)
