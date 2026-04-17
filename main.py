@@ -10,7 +10,7 @@ app = FastAPI()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 SHEETDB_URL = os.getenv("SHEETDB_URL")
 
-# 🧠 MEMORY STORE (simple)
+# 🧠 MEMORY STORE
 user_states = {}
 
 # 📊 SAVE TO GOOGLE SHEETS
@@ -32,7 +32,7 @@ def save_to_sheets(name, location, interest, number):
         print("Sheet save error:", e)
 
 
-# 🧠 AI FUNCTION (OpenRouter)
+# 🤖 AI FUNCTION
 def get_ai_reply(message):
     try:
         response = requests.post(
@@ -67,18 +67,25 @@ def home():
 @app.post("/webhook")
 async def whatsapp_webhook(request: Request):
 
-    # 🔥 FIXED: manual parsing (NO crash)
+    # 🔥 SAFE PARSING
     body = await request.body()
     data = body.decode()
-
     parsed = parse_qs(data)
 
-    user_message = parsed.get("Body", [""])[0]
+    user_message = parsed.get("Body", [""])[0].strip()
     user_number = parsed.get("From", [""])[0]
 
     print(f"User: {user_number} | Message: {user_message}")
 
-    # 🧠 USER STATE FLOW
+    # 🔄 RESET FLOW IF USER SAYS HI
+    if user_message.lower() in ["hi", "hello", "hey", "start"]:
+        user_states[user_number] = {"stage": "ask_name"}
+        return PlainTextResponse(
+            "<Response><Message>Hi! What's your name?</Message></Response>",
+            media_type="application/xml"
+        )
+
+    # 🧠 INIT STATE
     if user_number not in user_states:
         user_states[user_number] = {"stage": "ask_name"}
 
@@ -87,13 +94,13 @@ async def whatsapp_webhook(request: Request):
     # 🪜 FLOW LOGIC
 
     if state["stage"] == "ask_name":
-        state["stage"] = "ask_location"
         state["name"] = user_message
+        state["stage"] = "ask_location"
         reply = "Nice to meet you! Which city are you looking to buy in?"
 
     elif state["stage"] == "ask_location":
-        state["stage"] = "ask_interest"
         state["location"] = user_message
+        state["stage"] = "ask_interest"
         reply = "Great! What kind of property are you interested in?"
 
     elif state["stage"] == "ask_interest":
@@ -107,15 +114,18 @@ async def whatsapp_webhook(request: Request):
             user_number
         )
 
-        state["stage"] = "done"
+        state["stage"] = "completed"
 
-        reply = "Awesome! Our team will contact you shortly. 😊"
+        reply = "Awesome! Our team will contact you shortly. 😊\n\nType 'Hi' to start again."
+
+    elif state["stage"] == "completed":
+        reply = "Type 'Hi' to start a new conversation 😊"
 
     else:
         # 🤖 AI fallback
         reply = get_ai_reply(user_message)
 
-    # 📤 TWILIO XML RESPONSE (VERY IMPORTANT)
+    # 📤 ALWAYS RETURN (FIXED BUG)
     return PlainTextResponse(
         f"<Response><Message>{reply}</Message></Response>",
         media_type="application/xml"
