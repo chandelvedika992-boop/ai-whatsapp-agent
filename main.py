@@ -1,144 +1,122 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
-from openai import OpenAI
-import requests
-from dotenv import load_dotenv
 import os
-
-# 🔐 Load environment variables
-load_dotenv()
+import requests
+from urllib.parse import parse_qs
 
 app = FastAPI()
 
-# 🔑 Secure keys from .env
-client = OpenAI(
-    api_key=os.getenv("OPENROUTER_API_KEY"),
-    base_url="https://openrouter.ai/api/v1"
-)
-
+# 🔐 ENV VARIABLES
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 SHEETDB_URL = os.getenv("SHEETDB_URL")
 
-# 🧠 In-memory storage
-user_data = {}
+# 🧠 MEMORY STORE (simple)
+user_states = {}
 
-# 🤖 AI helper
-def generate_ai_reply(prompt):
+# 📊 SAVE TO GOOGLE SHEETS
+def save_to_sheets(name, location, interest, number):
+    data = {
+        "data": [
+            {
+                "name": name,
+                "location": location,
+                "interest": interest,
+                "number": number
+            }
+        ]
+    }
+
     try:
-        response = client.chat.completions.create(
-            model="openai/gpt-3.5-turbo",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a professional real estate assistant. Be friendly, concise, and helpful."
-                },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ]
+        requests.post(SHEETDB_URL, json=data)
+    except Exception as e:
+        print("Sheet save error:", e)
+
+
+# 🧠 AI FUNCTION (OpenRouter)
+def get_ai_reply(message):
+    try:
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "mistralai/mistral-7b-instruct",
+                "messages": [
+                    {"role": "system", "content": "You are a helpful real estate assistant."},
+                    {"role": "user", "content": message}
+                ]
+            }
         )
-        return response.choices[0].message.content.strip()
+
+        return response.json()["choices"][0]["message"]["content"]
+
     except Exception as e:
-        print("AI ERROR:", str(e))
-        return "Got it! Let me help you further."
+        print("AI error:", e)
+        return "Sorry, something went wrong."
 
 
-# 📥 Save to Google Sheets
-def save_to_sheets(data):
-    try:
-        print("📤 Sending to Sheets:", data)
-        response = requests.post(SHEETDB_URL, json={"data": [data]})
-        print("✅ Sheet Response:", response.text)
-    except Exception as e:
-        print("❌ Sheet Error:", str(e))
-
-
+# 🏠 ROOT CHECK
 @app.get("/")
 def home():
     return {"message": "Server is running 🚀"}
 
 
+# 📩 WHATSAPP WEBHOOK
 @app.post("/webhook")
 async def whatsapp_webhook(request: Request):
 
-    # 🔒 Basic security check
-    if "Twilio" not in request.headers.get("User-Agent", ""):
-        return PlainTextResponse("Unauthorized", status_code=403)
+    # 🔥 FIXED: manual parsing (NO crash)
+    body = await request.body()
+    data = body.decode()
 
-    form = await request.form()
-    form_data = dict(form)
+    parsed = parse_qs(data)
 
-    user_message = form_data.get("Body", "").strip()
-    user_number = form_data.get("From", "")
+    user_message = parsed.get("Body", [""])[0]
+    user_number = parsed.get("From", [""])[0]
 
-    print(f"👤 User: {user_number} | Message: {user_message}")
+    print(f"User: {user_number} | Message: {user_message}")
 
-    # 📌 Initialize user
-    if user_number not in user_data:
-        user_data[user_number] = {
-            "name": None,
-            "budget": None,
-            "location": None,
-            "stage": "start"
-        }
+    # 🧠 USER STATE FLOW
+    if user_number not in user_states:
+        user_states[user_number] = {"stage": "ask_name"}
 
-    user = user_data[user_number]
+    state = user_states[user_number]
 
-    # 🤖 Hybrid Flow
-    if user["stage"] == "start":
-        user["stage"] = "ask_name"
-        reply = generate_ai_reply("Ask the user their name politely.")
+    # 🪜 FLOW LOGIC
 
-    elif user["stage"] == "ask_name":
-        if not user_message:
-            reply = "Please tell me your name 😊"
-        else:
-            user["name"] = user_message
-            user["stage"] = "ask_budget"
-            reply = generate_ai_reply(f"The user's name is {user['name']}. Ask their budget.")
+    if state["stage"] == "ask_name":
+        state["stage"] = "ask_location"
+        state["name"] = user_message
+        reply = "Nice to meet you! Which city are you looking to buy in?"
 
-    elif user["stage"] == "ask_budget":
-        if not user_message:
-            reply = "Please share your budget 💰"
-        else:
-            user["budget"] = user_message
-            user["stage"] = "ask_location"
-            reply = generate_ai_reply("Ask which city they are looking in.")
+    elif state["stage"] == "ask_location":
+        state["stage"] = "ask_interest"
+        state["location"] = user_message
+        reply = "Great! What kind of property are you interested in?"
 
-    elif user["stage"] == "ask_location":
-        if not user_message:
-            reply = "Please tell me the city 📍"
-        else:
-            user["location"] = user_message
-            user["stage"] = "done"
+    elif state["stage"] == "ask_interest":
+        state["interest"] = user_message
 
-            print("🧠 DEBUG DATA:", user)
+        # 📊 SAVE DATA
+        save_to_sheets(
+            state.get("name"),
+            state.get("location"),
+            state.get("interest"),
+            user_number
+        )
 
-            # 💾 Save to Sheets
-            save_to_sheets({
-                "Name": user["name"],
-                "Budget": user["budget"],
-                "Location": user["location"],
-                "Phone": user_number
-            })
+        state["stage"] = "done"
 
-            summary = f"""
-User Details:
-Name: {user['name']}
-Budget: {user['budget']}
-Location: {user['location']}
-"""
-
-            reply = generate_ai_reply(
-                f"Summarize this nicely and tell the user that a property agent will contact them soon:\n{summary}"
-            )
-
-            print("🔥 LEAD CAPTURED:", user)
+        reply = "Awesome! Our team will contact you shortly. 😊"
 
     else:
-        reply = generate_ai_reply("Tell the user we will contact them soon.")
+        # 🤖 AI fallback
+        reply = get_ai_reply(user_message)
 
+    # 📤 TWILIO XML RESPONSE (VERY IMPORTANT)
     return PlainTextResponse(
-    f"<Response><Message>{reply}</Message></Response>",
-    media_type="application/xml"
-)
+        f"<Response><Message>{reply}</Message></Response>",
+        media_type="application/xml"
+    )
