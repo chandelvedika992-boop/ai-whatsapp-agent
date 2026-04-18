@@ -75,13 +75,23 @@ async def whatsapp_webhook(request: Request):
 
     print(f"User: {user_number} | Message: {user_message}")
 
-    # 🧠 INIT STATE SAFELY
-    if user_number not in user_states:
-        user_states[user_number] = {"stage": "ask_name"}
-
-    # 🔄 RESET FLOW
+    # 🔄 RESET FLOW — return immediately so "hi" is NEVER stored as a name
     if user_message.lower() in ["hi", "hello", "hey", "start"]:
         user_states[user_number] = {"stage": "ask_name"}
+        reply = "Welcome! 👋 I'm your real estate assistant. What's your name? 😊"
+        return PlainTextResponse(
+            content=f"<Response><Message>{reply}</Message></Response>",
+            media_type="application/xml"
+        )
+
+    # 🧠 INIT STATE if user skips greeting
+    if user_number not in user_states:
+        user_states[user_number] = {"stage": "ask_name"}
+        reply = "Welcome! 👋 I'm your real estate assistant. What's your name? 😊"
+        return PlainTextResponse(
+            content=f"<Response><Message>{reply}</Message></Response>",
+            media_type="application/xml"
+        )
 
     state = user_states[user_number]
 
@@ -138,9 +148,7 @@ async def whatsapp_webhook(request: Request):
     else:
         reply = get_ai_reply(user_message)
 
-    twiml_response = f"<Response><Message>{reply}</Message></Response>"
-
     return PlainTextResponse(
-        content=twiml_response,
+        content=f"<Response><Message>{reply}</Message></Response>",
         media_type="application/xml"
     )
