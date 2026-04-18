@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
 import os
 import requests
+import datetime
 from urllib.parse import parse_qs
 
 app = FastAPI()
@@ -13,9 +14,8 @@ SHEETDB_URL = os.getenv("SHEETDB_URL")
 # 🧠 MEMORY STORE
 user_states = {}
 
-# 📊 SAVE TO GOOGLE SHEETS
-import datetime
 
+# 📊 SAVE TO GOOGLE SHEETS
 def save_to_sheets(name, location, budget, interest, number):
     data = {
         "data": [
@@ -29,11 +29,11 @@ def save_to_sheets(name, location, budget, interest, number):
             }
         ]
     }
-
     try:
         requests.post(SHEETDB_URL, json=data)
     except Exception as e:
         print("Sheet save error:", e)
+
 
 # 🤖 AI FUNCTION
 def get_ai_reply(message):
@@ -52,9 +52,7 @@ def get_ai_reply(message):
                 ]
             }
         )
-
         return response.json()["choices"][0]["message"]["content"]
-
     except Exception as e:
         print("AI error:", e)
         return "Sorry, something went wrong."
@@ -66,11 +64,8 @@ def home():
     return {"message": "Server is running 🚀"}
 
 
-# 📩 WHATSAPP WEBHOOK
 @app.post("/webhook")
 async def whatsapp_webhook(request: Request):
-
-    # 🔥 SAFE PARSING
     body = await request.body()
     data = body.decode()
     parsed = parse_qs(data)
@@ -80,88 +75,72 @@ async def whatsapp_webhook(request: Request):
 
     print(f"User: {user_number} | Message: {user_message}")
 
-    # 🔄 RESET FLOW IF USER SAYS HI
-    if user_message.lower() in ["hi", "hello", "hey", "start"]:
-        user_states[user_number] = {"stage": "ask_name"}
-        return PlainTextResponse(
-            "<Response><Message>Hi! What's your name?</Message></Response>",
-            media_type="application/xml"
-        )
-
-    # 🧠 INIT STATE
+    # 🧠 INIT STATE SAFELY
     if user_number not in user_states:
         user_states[user_number] = {"stage": "ask_name"}
-
-    state = user_states[user_number]
-
-    # 🪜 FLOW LOGIC
-
-@app.post("/webhook")
-async def whatsapp_webhook(request: Request):
-
-    body = await request.body()
-    data = body.decode()
-    parsed = parse_qs(data)
-
-    user_message = parsed.get("Body", [""])[0].strip()
-    user_number = parsed.get("From", [""])[0]
-
-    print(f"User: {user_number} | Message: {user_message}")
 
     # 🔄 RESET FLOW
     if user_message.lower() in ["hi", "hello", "hey", "start"]:
         user_states[user_number] = {"stage": "ask_name"}
-        return PlainTextResponse(
-            "<Response><Message>Hi! What's your name?</Message></Response>",
-            media_type="application/xml"
-        )
-
-    # 🧠 INIT
-    if user_number not in user_states:
-        user_states[user_number] = {"stage": "ask_name"}
 
     state = user_states[user_number]
 
-    # 🪜 FLOW
+    # 🪜 CONVERSATION FLOW
 
+    # 👉 ASK NAME
     if state["stage"] == "ask_name":
-        state["name"] = user_message
-        state["stage"] = "ask_location"
-        reply = "Nice to meet you! Which city are you looking in? 📍"
+        if not user_message:
+            reply = "Please tell me your name 😊"
+        else:
+            state["name"] = user_message
+            state["stage"] = "ask_location"
+            reply = f"Nice to meet you, {user_message}! Which city are you looking in? 📍"
 
+    # 👉 ASK LOCATION
     elif state["stage"] == "ask_location":
-        state["location"] = user_message
-        state["stage"] = "ask_budget"
-        reply = "Great! What's your budget range? 💰"
+        if not user_message:
+            reply = "Please tell me the city 📍"
+        else:
+            state["location"] = user_message
+            state["stage"] = "ask_budget"
+            reply = "Great! What's your budget range? 💰"
 
+    # 👉 ASK BUDGET
     elif state["stage"] == "ask_budget":
-        state["budget"] = user_message
-        state["stage"] = "ask_interest"
-        reply = "Nice! What type of property are you looking for?"
+        if not user_message:
+            reply = "Please share your budget 💰"
+        else:
+            state["budget"] = user_message
+            state["stage"] = "ask_interest"
+            reply = "Nice! What type of property are you looking for? 🏠"
 
+    # 👉 ASK INTEREST
     elif state["stage"] == "ask_interest":
-        state["interest"] = user_message
+        if not user_message:
+            reply = "Please tell me the property type 🏠"
+        else:
+            state["interest"] = user_message
+            save_to_sheets(
+                state.get("name"),
+                state.get("location"),
+                state.get("budget"),
+                state.get("interest"),
+                user_number
+            )
+            state["stage"] = "completed"
+            reply = "Perfect! Our team will contact you shortly. 😊\n\nType 'Hi' to start again."
 
-        # 📊 SAVE DATA
-        save_to_sheets(
-            state.get("name"),
-            state.get("location"),
-            state.get("budget"),
-            state.get("interest"),
-            user_number
-        )
-
-        state["stage"] = "completed"
-
-        reply = "Perfect! Our team will contact you shortly. 😊\n\nType 'Hi' to start again."
-
+    # 👉 COMPLETED
     elif state["stage"] == "completed":
         reply = "Type 'Hi' to start a new conversation 😊"
 
+    # 👉 FALLBACK (AI)
     else:
         reply = get_ai_reply(user_message)
 
+    twiml_response = f"<Response><Message>{reply}</Message></Response>"
+
     return PlainTextResponse(
-        f"<Response><Message>{reply}</Message></Response>",
+        content=twiml_response,
         media_type="application/xml"
     )
