@@ -16,6 +16,8 @@ user_states = {}
 
 # 📊 SAVE TO GOOGLE SHEETS
 def save_to_sheets(name, location, budget, interest, number):
+    clean_number = number.replace("whatsapp:", "")
+
     data = {
         "data": [
             {
@@ -23,7 +25,7 @@ def save_to_sheets(name, location, budget, interest, number):
                 "location": location,
                 "budget": budget,
                 "interest": interest,
-                "user_id": number,
+                "number": clean_number,
                 "timestamp": str(datetime.datetime.now())
             }
         ]
