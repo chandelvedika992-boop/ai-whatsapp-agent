@@ -62,11 +62,14 @@ def get_ai_reply(message):
         print("AI error:", e)
         return "Sorry, something went wrong."
 
+@app.api_route("/", methods=["GET", "HEAD"])
+def home():
+    return {"message": "Server is running "}
 
 # 🏠 ROOT CHECK
 @app.get("/")
 def home():
-    return {"message": "Server is running 🚀"}
+    return {"message": "Server is running "}
 
 
 # 📩 WHATSAPP WEBHOOK
