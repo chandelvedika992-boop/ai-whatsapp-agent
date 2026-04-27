@@ -5,6 +5,7 @@ import requests
 import datetime
 import xml.sax.saxutils as saxutils  # FIX 1: to safely escape user text in XML
 from urllib.parse import parse_qs
+from pydantic import BaseModel
 
 app = FastAPI()
 
@@ -21,18 +22,18 @@ def save_to_sheets(name, location, budget, interest, number):
     clean_number = number.replace("whatsapp:", "")  # Twilio adds "whatsapp:" prefix
 
     data = {
-        "data": [
-            {
-                "name": name,
-                "location": location,
-                "budget": budget,
-                "interest": interest,
-                "number": clean_number,
-                "timestamp": str(datetime.datetime.now())
-            }
-        ]
-    }
-
+    "data": [
+        {
+            "name": name,
+            "location": location,
+            "budget": budget,
+            "interest": interest,
+            "number": clean_number,
+            "timestamp": str(datetime.datetime.now()),
+            "status": "New"          
+        }
+    ]
+}
     try:
         response = requests.post(SHEETDB_URL, json=data, timeout=8)  # FIX 2: always set timeout
         print("Sheet response:", response.text)
@@ -157,6 +158,70 @@ def build_response(text: str) -> PlainTextResponse:
     xml = f"<Response><Message>{safe_text}</Message></Response>"
     return PlainTextResponse(xml, media_type="application/xml")
 
+@app.get("/leads")
+def get_leads(status: str = None):
+    try:
+        response = requests.get(SHEETDB_URL, timeout=8)
+        response.raise_for_status()  # raises an error if SheetDB returns 4xx/5xx
+ 
+        leads = response.json()  # SheetDB returns a list of row dicts
+ 
+        # If ?status=New was passed, filter to only matching rows
+        # .lower() on both sides so "new" and "New" both match
+        if status:
+            leads = [
+                lead for lead in leads
+                if lead.get("status", "").lower() == status.lower()
+            ]
+ 
+        return {
+            "count": len(leads),
+            "leads": leads
+        }
+ 
+    except requests.exceptions.Timeout:
+        # SheetDB took too long — tell the caller clearly
+        return {"error": "SheetDB timed out. Try again."}, 504
+ 
+    except Exception as e:
+        print("Get leads error:", e)
+        return {"error": "Could not fetch leads."}, 500
+ 
+class StatusUpdate(BaseModel):
+    status: str
+ 
+VALID_STATUSES = ["New", "Contacted", "Qualified", "Closed"]
 
-
-
+@app.patch("/leads/{number}/status")
+def update_lead_status(number: str, body: StatusUpdate):
+ 
+    # Reject invalid status values before hitting SheetDB
+    if body.status not in VALID_STATUSES:
+        return {
+            "error": f"Invalid status. Must be one of: {VALID_STATUSES}"
+        }, 400
+ 
+    try:
+        
+        patch_url = f"{SHEETDB_URL}/number/{number}"
+ 
+        response = requests.patch(
+            patch_url,
+            json={"data": {"status": body.status}},
+            timeout=8
+        )
+        response.raise_for_status()
+ 
+        return {
+            "success": True,
+            "number": number,
+            "new_status": body.status
+        }
+ 
+    except requests.exceptions.Timeout:
+        return {"error": "SheetDB timed out."}, 504
+ 
+    except Exception as e:
+        print("Status update error:", e)
+        return {"error": "Could not update status."}, 500
+ 
