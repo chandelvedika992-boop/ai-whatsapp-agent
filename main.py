@@ -2,21 +2,23 @@ from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
 import os
 import requests
-from urllib.parse import parse_qs
 import datetime
+import xml.sax.saxutils as saxutils  # FIX 1: to safely escape user text in XML
+from urllib.parse import parse_qs
 
 app = FastAPI()
 
-# 🔐 ENV VARIABLES
+
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 SHEETDB_URL = os.getenv("SHEETDB_URL")
 
-# 🧠 MEMORY STORE (MULTI-USER SUPPORT)
+
 user_states = {}
 
-# 📊 SAVE TO GOOGLE SHEETS
+
+
 def save_to_sheets(name, location, budget, interest, number):
-    clean_number = number.replace("whatsapp:", "")
+    clean_number = number.replace("whatsapp:", "")  # Twilio adds "whatsapp:" prefix
 
     data = {
         "data": [
@@ -32,13 +34,13 @@ def save_to_sheets(name, location, budget, interest, number):
     }
 
     try:
-        response = requests.post(SHEETDB_URL, json=data)
+        response = requests.post(SHEETDB_URL, json=data, timeout=8)  # FIX 2: always set timeout
         print("Sheet response:", response.text)
     except Exception as e:
         print("Sheet save error:", e)
 
 
-# 🤖 AI FUNCTION (fallback)
+
 def get_ai_reply(message):
     try:
         response = requests.post(
@@ -50,116 +52,111 @@ def get_ai_reply(message):
             json={
                 "model": "mistralai/mistral-7b-instruct",
                 "messages": [
-                    {"role": "system", "content": "You are a helpful real estate assistant."},
+                    {"role": "system", "content": "You are a helpful real estate assistant for an Indian real estate company. Keep replies short and friendly, under 3 sentences."},
                     {"role": "user", "content": message}
                 ]
-            }
+            },
+            timeout=10  # FIX 2: timeout on AI call too
         )
-
         return response.json()["choices"][0]["message"]["content"]
 
     except Exception as e:
         print("AI error:", e)
-        return "Sorry, something went wrong."
+        return "Sorry, I couldn't process that right now. Type 'Hi' to start fresh! 😊"
+
+
 
 @app.api_route("/", methods=["GET", "HEAD"])
 def home():
-    return {"message": "Server is running "}
-
-# 🏠 ROOT CHECK
-@app.get("/")
-def home():
-    return {"message": "Server is running "}
+    return {"message": "LeadNest AI is running 🚀"}
 
 
-# 📩 WHATSAPP WEBHOOK
+
 @app.post("/webhook")
 async def whatsapp_webhook(request: Request):
 
-    # 🔥 SAFE PARSING
+    
     body = await request.body()
-    data = body.decode()
-    parsed = parse_qs(data)
+    parsed = parse_qs(body.decode())
 
     user_message = parsed.get("Body", [""])[0].strip()
     user_number = parsed.get("From", [""])[0]
 
-    print(f"User: {user_number} | Message: {user_message}")
-    print("Current states:", user_states)  # 👈 shows multi-user handling
-
-    # 🔄 RESET FLOW
-    if user_message.lower() in ["hi", "hello", "hey", "start"]:
-        user_states[user_number] = {"stage": "ask_name"}
+    
+    if not user_number:
         return PlainTextResponse(
-            "<Response><Message>Hi! What's your name?</Message></Response>",
+            "<Response><Message>Something went wrong. Please try again.</Message></Response>",
             media_type="application/xml"
         )
 
-    # 🧠 INIT USER STATE
+    print(f" From: {user_number} | Message: {user_message}")
+
+    
+    if user_message.lower() in ["hi", "hello", "hey", "start"]:
+        user_states[user_number] = {"stage": "ask_name"}
+        return build_response("Hi there! 👋 I'm your real estate assistant.\n\nWhat's your name?")
+
+   
     if user_number not in user_states:
         user_states[user_number] = {"stage": "ask_name"}
+        return build_response("Hi there! 👋 I'm your real estate assistant.\n\nWhat's your name?")
 
+   
     state = user_states[user_number]
 
-    # 🪜 FLOW LOGIC
+    
 
-    # 👉 NAME
     if state["stage"] == "ask_name":
-        if not user_message:
-            reply = "Please tell me your name 😊"
-        else:
-            state["name"] = user_message
-            state["stage"] = "ask_location"
-            reply = f"Nice to meet you, {user_message}! Which city are you looking in? 📍"
+        state["name"] = user_message
+        state["stage"] = "ask_location"
+        reply = f"Nice to meet you, {user_message}! 😊\n\nWhich city are you looking for a property in? 📍"
 
-    # 👉 LOCATION
     elif state["stage"] == "ask_location":
-        if not user_message:
-            reply = "Please tell me the city 📍"
-        else:
-            state["location"] = user_message
-            state["stage"] = "ask_budget"
-            reply = "Great! What's your budget range? 💰"
+        state["location"] = user_message
+        state["stage"] = "ask_budget"
+        reply = "Great choice! 💰 What's your budget range?\n\n(Example: 30-50 lakhs, 1 crore+)"
 
-    # 👉 BUDGET
     elif state["stage"] == "ask_budget":
-        if not user_message:
-            reply = "Please share your budget 💰"
-        else:
-            state["budget"] = user_message
-            state["stage"] = "ask_interest"
-            reply = "Nice! What type of property are you looking for?"
+        state["budget"] = user_message
+        state["stage"] = "ask_interest"
+        reply = "Almost done! 🏠 What type of property are you looking for?\n\n(Example: 2BHK flat, villa, plot, commercial)"
 
-    # 👉 INTEREST
     elif state["stage"] == "ask_interest":
-        if not user_message:
-            reply = "Please tell me property type 🏠"
-        else:
-            state["interest"] = user_message
+        state["interest"] = user_message
+        state["stage"] = "completed"
 
-            # 📊 SAVE DATA
-            save_to_sheets(
-                state.get("name"),
-                state.get("location"),
-                state.get("budget"),
-                state.get("interest"),
-                user_number
-            )
+        
+        save_to_sheets(
+            state.get("name"),
+            state.get("location"),
+            state.get("budget"),
+            state.get("interest"),
+            user_number
+        )
 
-            state["stage"] = "completed"
+        reply = (
+            f"Perfect, {state.get('name')}! ✅\n\n"
+            "Our team will review your requirements and contact you shortly.\n\n"
+            "Have a real estate question in the meantime? Just ask me! 😊"
+        )
 
-            reply = "Perfect! Our team will contact you shortly. 😊\n\nType 'Hi' to start again."
-
-    # 👉 COMPLETED
     elif state["stage"] == "completed":
-        reply = "Type 'Hi' to start a new conversation 😊"
+        # FIX 6: After completing the form, don't just say "type hi again."
+        # Use the AI to answer real questions — this makes the bot actually useful.
+        reply = get_ai_reply(user_message)
 
-    # 👉 AI FALLBACK
     else:
         reply = get_ai_reply(user_message)
 
-    # 📤 TWILIO XML RESPONSE
-    return PlainTextResponse(
-        f"<Response><Message>{reply}</Message></Response>",
-        media_type="application/xml"
-    )
+    return build_response(reply)
+
+
+
+def build_response(text: str) -> PlainTextResponse:
+    safe_text = saxutils.escape(text)
+    xml = f"<Response><Message>{safe_text}</Message></Response>"
+    return PlainTextResponse(xml, media_type="application/xml")
+
+
+
+
